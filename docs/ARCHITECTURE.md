@@ -7,15 +7,21 @@ This file is the project's memory. The agent reads it at the start of every sess
 Written by the agent from the candidate's description. What belongs here is described in `AGENTS.md`.
 
 ### Структура
-- `src/api/` — типизированные функции запросов на `fetch` (без Redux). Базовый `http.ts` (BASE_URL, разбор `ApiError`, проброс `AbortSignal`) и `products.ts`.
-- `src/entities/<entity>/` — типы сущности и RTK slice с thunks (`createAsyncThunk`) и селекторами. Сущности: `product` (`list`, `details`), `category`.
-- `src/store/` — `configureStore`, типы `RootState`, `AppDispatch`.
-- `src/hooks/` — абстрактные хуки (типизированные `useAppDispatch`/`useAppSelector`, debounce, работа с query-параметрами).
-- `src/page/` — UI страницы на компонентах `@mui/material`: `index.tsx` (только композиция), `ProductFilters.tsx`, `ProductTable.tsx`, `ProductDetailsDialog.tsx`, `format.ts` (форматтеры и подписи). Каждый компонент сам читает URL-состояние через хук и свои данные из store.
+- `src/api/` — типизированные функции запросов на `fetch` (без Redux). Базовый `http.ts` (BASE_URL, `ApiRequestError` с HTTP-статусом, статус 0 — сетевая ошибка, проброс `AbortSignal`), `products.ts` (список, поиск, категория, товар по id; обёртка ответа списка — внутренний тип этого файла), `categories.ts`.
+- `src/entities/<entity>/` — типы сущности, RTK slice с селекторами и `thunks.ts` (`createAsyncThunk`) рядом со слайсом. Сущности: `product` (`types.ts` — сущность; `list/` — `slice.ts`, `thunks.ts`, `types.ts`, `sort.ts` (поля, разбор и цикл сортировки), `constants.ts` (лимит 20, поля `select`); `details/` — `slice.ts`, `thunks.ts`), `category`.
+- `src/store/` — `combineSlices` + `configureStore`, типы `RootState`, `AppDispatch`.
+- `src/hooks/` — абстрактные хуки (типизированные `useAppDispatch`/`useAppSelector`, debounce, `useLatestRequest`); `productsUrl/` — URL-хук страницы (`useProductsUrlState.ts`, `parse.ts`, `canonical.ts`, `params.ts` — имена параметров).
+- `src/utils/` — общие форматтеры (`format.ts`), ошибка запроса в store (`requestError.ts`: `{ status, message }`) и текст ошибки по статусу (`errorText.ts`).
+- `src/page/` — UI страницы на компонентах `@mui/material`: `index.tsx` (контейнер), `ProductFilters.tsx`, `ProductTable/` (`index.tsx`, шапка, тело, строка, `columns.ts`, `useProductListView.ts`, `focusProductRow.ts`), `ProductDetailsDialog/` (`index.tsx`, `ProductDetails.tsx`, `ProductReviews.tsx`, `Field.tsx`), `productLabels.ts` (подписи товара). Контейнер читает URL и передаёт пропсами только значения из URL и колбэки; компоненты сами запускают свои запросы и читают store.
 
 ### Поток данных
-URL query (react-router `useSearchParams`) → страница читает и валидирует фильтры (`q`, `category`, `sortBy`, `order`, `productId`) → dispatch thunk → `api/` → `fetch` → slice хранит данные, `total` и статус загрузки → UI.
+URL query (react-router `useSearchParams`) → контейнер читает и валидирует фильтры (`q`, `category`, `sortBy`, `order`, `productId`) и передаёт их компонентам → компонент делает dispatch thunk → `api/` → `fetch` → slice хранит данные и статус загрузки → компонент читает store.
 Изменение фильтров в UI пишет в URL (`push`/`replace` по решению 10), что запускает новый запрос. Фильтры в Redux не дублируются. Запрос отправляется только при изменении параметров; предыдущий запрос отменяется.
+- Запросы запускает `useLatestRequest`: новый запрос при смене аргументов (сравнение через JSON), отмена предыдущего, повтор — с последними аргументами. При размонтировании запрос не отменяется, чтобы двойной эффект StrictMode не давал дубль.
+- Категории загружает `ProductFilters` один раз (повтор — только после ошибки). URL-хук читает список из store для проверки категории; пока список не загружен, запрос товаров не отправляется (`listQuery = null`).
+- Карточка товара кэшируется по id (решение 20).
+- Ошибка: `ApiRequestError` → `RequestError { status, message }` в слайсе → компонент выбирает текст через `errorText` (решение 18).
+- После закрытия модалки фокус возвращается на кнопку в строке открытого товара (`focusProductRow`, передаёт контейнер).
 
 ### Конвенции
 Из `docs/requirements_1.md`–`docs/requirements_3.md`:
@@ -23,6 +29,13 @@ URL query (react-router `useSearchParams`) → страница читает и 
 - Отсутствующие значения показываются как «—», а не пустота или `undefined`.
 - Числа и деньги отформатированы и выровнены вправо, даты в читаемом виде.
 - Длинные названия не ломают таблицу.
+
+Как это сделано в таблице и модалке:
+- Первая загрузка — `Skeleton` на 20 строк; повторная — старые строки приглушены, сверху `LinearProgress`, у тела таблицы `aria-busy`.
+- Пусто — строка «Ничего не найдено».
+- Ошибка — `Alert` с «Повторить» над таблицей, прошлые строки и сортировка остаются; в модалке — `Alert` вместо содержимого; категории — `Alert` под фильтрами, селект показывает категорию из URL.
+- Таблица — `table-layout: fixed`, ширины колонок в `columns.ts`, многоточие в ячейках, горизонтальная прокрутка на узком экране.
+- Строка открывается кликом и кнопкой в ячейке названия (Enter / пробел).
 
 ### Definition of done
 - `npm run typecheck` и `npm run lint` проходят.
@@ -111,3 +124,33 @@ Entries are added by the agent once the candidate confirms them. The format is d
 - Context: `page/index.tsx` разрастается с добавлением поиска, категории и сортировки.
 - Decision: файлы страницы в `src/page/` — `index.tsx` (композиция), `ProductFilters.tsx`, `ProductTable.tsx`, `ProductDetailsDialog.tsx`, `format.ts`. Компоненты независимы: сами читают URL-состояние через хук и свои данные из store, без проброса пропсов.
 - Why: решение кандидата. Отклонены: слой `src/components/` для переиспользования, UI внутри `entities/`; передача данных пропсами со страницы.
+
+### 17. Контейнер страницы и границы компонентов
+- Context: отчёт о тестировании (ARCH-005, DEF-009) и ревью: компоненты сами читали URL; затем — слишком много пропсов.
+- Decision: `page/index.tsx` владеет URL (`useProductsUrlState`, один вызов) и фокусом. Компоненты сами запускают свои запросы и читают store; через пропсы получают только значения из URL и колбэки их изменения.
+- Why: один владелец URL и истории; компоненты без проброса данных. Отклонены: компоненты, читающие URL сами (решение 16), и контейнер, раздающий все данные пропсами.
+
+### 18. Тексты ошибок
+- Context: DEF-006 — текст ошибки приходил с API по-английски.
+- Decision: 404 — «Товар не найден», 5xx — «Сервер временно недоступен», сеть — «Не удалось связаться с сервером», иначе «Не удалось загрузить …». Текст API только в состоянии.
+- Why: интерфейс на русском (решение 13).
+
+### 19. Убрать `total`
+- Context: ARCH-004.
+- Decision: `total` удалён из слайса списка.
+- Why: пагинации нет (решение 12).
+
+### 20. Кэш карточки по id
+- Context: DEF-001, ARCH-003 — в модалке на мгновение был виден прошлый товар.
+- Decision: `productDetails.entities[id]` со своим статусом и ошибкой; запрос только для отсутствующей или упавшей записи.
+- Why: модалка не показывает чужой товар, повторное открытие мгновенное.
+
+### 21. Раскладка файлов
+- Context: ревью структуры.
+- Decision: thunk'и в `thunks.ts` рядом со слайсом; типы товара разделены на сущность, список (`list/types.ts`), сортировку (`list/sort.ts`) и обёртку ответа API (внутренний тип `api/products.ts`); общие форматтеры в `src/utils/`; URL-хук в `hooks/productsUrl/`; таблица и модалка в своих папках в `page/`. Заменяет расположение файлов из решений 8 и 16.
+- Why: у файла одна ответственность, логика сортировки в одном месте внутри сущности.
+
+### 22. Категория из URL, когда список категорий не загрузился
+- Context: DEF-003; решение 14 проверяет категорию по списку, но не говорит, что делать, если список упал.
+- Decision: при ошибке загрузки категорий категория из URL используется как есть, без проверки: запрос товаров уходит с ней, селект её показывает, под фильтрами — `Alert` с повтором.
+- Why: фильтр из ссылки не теряется из-за недоступного справочника; неверная категория даёт пустой список, а не падение.
